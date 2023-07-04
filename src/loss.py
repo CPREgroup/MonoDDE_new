@@ -97,22 +97,22 @@ class FocalLoss(nn.Cell):
         self.pow=ops.Pow()
 
     def construct(self, prediction, target):
-        positive_index = ops.cast(ops.equal(target,1),ms.float32)
-        negative_index = ms.Tensor((ops.less(target,1).asnumpy() & ops.ge(target,0).asnumpy()),ms.float32)
-        ignore_index = ops.cast(ops.equal(target,-1),ms.float32)  # ignored pixels
+        positive_index = target.equal(1)
+        negative_index = (target.lt(1) & target.ge(0))
+        ignore_index = ops.equal(target,-1)  # ignored pixels
 
         negative_weights = self.pow(1 - target, self.beta)
         loss = 0.
 
-        positive_loss = ops.Log()(prediction) \
+        positive_loss = ops.log(prediction) \
                         * self.pow(1 - prediction, self.alpha) * positive_index
 
-        negative_loss = ops.Log()(1 - prediction) \
+        negative_loss = ops.log(1 - prediction) \
                         * self.pow(prediction, self.alpha) * negative_weights * negative_index
 
-        num_positive = ops.reduce_sum(ops.cast(positive_index,ms.float32))
-        positive_loss = ops.reduce_sum(positive_loss)
-        negative_loss = ops.reduce_sum(negative_loss)
+        num_positive = positive_index.sum()
+        positive_loss = positive_loss.sum()
+        negative_loss = negative_loss.sum()
 
         loss = - negative_loss - positive_loss
 
@@ -177,7 +177,7 @@ def Real_MultiBin_loss(vector_ori, gt_ori, num_bin=4):
     l1loss=nn.L1Loss(reduction='none')
     sin=ops.Sin()
     cos=ops.Cos()
-    for i in range(ms.Tensor(num_bin)):
+    for i in range(num_bin):
         # bin cls loss
         cls_ce_loss = ops.cross_entropy(vector_ori[:, (i * 2): (i * 2 + 2)], ops.expand_dims(gt_ori[:, i],-1), reduction='none')  #gt_ori  p
         # regression loss
@@ -187,13 +187,13 @@ def Real_MultiBin_loss(vector_ori, gt_ori, num_bin=4):
             s = num_bin * 2 + i * 2
             e = s + 2
             pred_offset = ops.L2Normalize()(vector_ori[valid_mask_i, s: e])
-            reg_loss = l1loss(pred_offset[:, 0], sin(ops.cast((gt_ori[valid_mask_i, num_bin + i]),ms.float32))) + \
-                       l1loss(pred_offset[:, 1], cos(ops.cast((gt_ori[valid_mask_i, num_bin + i]),ms.float32)))
+            reg_loss = l1loss(pred_offset[:, 0], sin((gt_ori[valid_mask_i, num_bin + i]))) + \
+                       l1loss(pred_offset[:, 1], cos((gt_ori[valid_mask_i, num_bin + i])))
 
             reg_losses += reg_loss.sum()
-            reg_cnt += ms.Tensor(valid_mask_i,ms.float32).sum()
+            reg_cnt += valid_mask_i.sum()
 
-    return ops.div(cls_losses, ms.Tensor(num_bin,ms.float32)) + ops.div(reg_losses, ms.Tensor(reg_cnt,ms.float32))
+    return ops.div(cls_losses, ms.Tensor(num_bin,ms.float32)) + ops.div(reg_losses, reg_cnt)
 
 
 def get_iou_3d(pred_corners, target_corners):
@@ -225,7 +225,7 @@ def get_iou_3d(pred_corners, target_corners):
 
     # x-z plane overlap
     for i in range(N):
-        bottom_a, bottom_b =  Polygon(ops.transpose(A[i, 0:4, [0, 2]],(1,0)).asnumpy()), Polygon(ops.transpose(B[i, 0:4, [0, 2]],(1,0)))
+        bottom_a, bottom_b =  Polygon(ops.transpose(A[i, 0:4, [0, 2]],(1,0))), Polygon(ops.transpose(B[i, 0:4, [0, 2]],(1,0)))
 
         if bottom_a.is_valid and bottom_b.is_valid:
             # check is valid,  A valid Polygon may not possess any overlapping exterior or interior rings.
@@ -342,7 +342,7 @@ class Mono_loss(nn.Cell):
         if self.heatmap_type == 'centernet':
             hm_loss, num_hm_pos = self.cls_loss_fnc(pred_heatmap, targets_heatmap)
             hm_loss = ops.Tensor(self.loss_weights['hm_loss']) * hm_loss  # Heatmap loss.
-            hm_loss = hm_loss / ops.maximum(num_hm_pos, ops.Tensor(1, ms.float32))
+            hm_loss = hm_loss / ops.clamp(num_hm_pos, 1)
         else:
             raise ValueError
         num_reg_2D = reg_nums['reg_2D']
@@ -451,10 +451,10 @@ class Mono_loss(nn.Cell):
                                 Real_MultiBin_loss(preds['orien_3D'], pred_targets['orien_3D'],
                                                    num_bin=self.orien_bin_size)
             # dimension loss
-            dims_3D_loss = self.reg_loss_fnc(preds['dims_3D'], pred_targets['dims_3D']) * self.dim_weight.astype(preds['dims_3D'].dtype)
+            dims_3D_loss = self.reg_loss_fnc(preds['dims_3D'], pred_targets['dims_3D']) * ops.cast(self.dim_weight,preds['dims_3D'].dtype)
             if self.dim_uncern:
                 dims_3D_loss = dims_3D_loss / preds['dim_uncern'] + self.log(preds['dim_uncern'])
-            dims_3D_loss = self.reducesum(dims_3D_loss,axis=1)
+            dims_3D_loss = dims_3D_loss.sum(axis=1)
             if self.cfg.SOLVER.DYNAMIC_WEIGHT:
                 dims_3D_loss = reweight_loss(dims_3D_loss, objs_weight)
             dims_3D_loss = self.loss_weights['dims_loss'] * dims_3D_loss.mean()
@@ -502,15 +502,15 @@ class Mono_loss(nn.Cell):
                         keypoint_loss = self.loss_weights['keypoint_loss'] * valid_keypoint_loss
                 else:
                     # N x K x 3
-                    keypoint_loss = ops.reduce_sum(self.keypoint_loss_fnc(preds['keypoints'], pred_targets['keypoints']),2) * pred_targets['keypoints_mask']
-                    keypoint_loss = ops.reduce_sum(keypoint_loss,axis=1)  # Left keypoints_loss shape: (val_objs,)
+                    keypoint_loss = self.keypoint_loss_fnc(preds['keypoints'], pred_targets['keypoints']).sum(2) * pred_targets['keypoints_mask']
+                    keypoint_loss = keypoint_loss.sum(axis=1)  # Left keypoints_loss shape: (val_objs,)
                     if self.cfg.SOLVER.DYNAMIC_WEIGHT:
                         keypoint_loss = reweight_loss(keypoint_loss, objs_weight)
-                    keypoint_loss = ops.div(ops.Tensor(self.loss_weights['keypoint_loss'],ms.float32) * keypoint_loss.sum(), ops.clamp(pred_targets['keypoints_mask'].sum(), ms.Tensor(1, ms.float32)))
+                    keypoint_loss = ops.Tensor(self.loss_weights['keypoint_loss'],ms.float32) * keypoint_loss.sum() / ops.clamp(pred_targets['keypoints_mask'].sum(), 1)
 
                 if self.compute_keypoint_depth_loss:
                     pred_keypoints_depth, keypoints_depth_mask = preds['keypoints_depths'], ops.cast(pred_targets['keypoints_depth_mask'],ms.bool_)
-                    target_keypoints_depth = self.expanddims(pred_targets['depth_3D'],-1).repeat(3,axis=1)
+                    target_keypoints_depth = self.expanddims(pred_targets['depth_3D'],-1).tile((1,3))
 
                     valid_pred_keypoints_depth = pred_keypoints_depth[keypoints_depth_mask]
                     invalid_pred_keypoints_depth = ops.Tensor(pred_keypoints_depth[~keypoints_depth_mask].asnumpy()) # The depths decoded from invalid keypoints are not used for updating networks.
@@ -562,14 +562,13 @@ class Mono_loss(nn.Cell):
 
                 if self.corner_with_uncertainty:
                     if self.pred_direct_depth and self.depth_with_uncertainty:
-                        combined_depth = self.concat((ops.expand_dims(preds['depth_3D'],1), (preds['keypoints_depths']).astype(ms.float32)))
+                        combined_depth = self.concat((ops.expand_dims(preds['depth_3D'],1), (preds['keypoints_depths'])))
                         combined_uncertainty = self.concat(
-                            (ops.expand_dims(preds['depth_uncertainty'],1), preds['corner_offset_uncertainty']))
-                        combined_uncertainty=self.exp(combined_uncertainty)
+                            (ops.expand_dims(preds['depth_uncertainty'],1), preds['corner_offset_uncertainty'])).exp()
                         combined_MAE = self.concat((ops.expand_dims(depth_MAE,1), keypoint_MAE))
                     else:
                         combined_depth = preds['keypoints_depths']
-                        combined_uncertainty = self.exp(preds['corner_offset_uncertainty'])
+                        combined_uncertainty = preds['corner_offset_uncertainty'].exp()
                         combined_MAE = keypoint_MAE
 
                     # the oracle MAE
@@ -578,8 +577,8 @@ class Mono_loss(nn.Cell):
                     hard_MAE = combined_MAE[ops.arange(combined_MAE.shape[0]), combined_uncertainty.argmin(axis=1)]
                     # the soft ensemble
                     combined_weights = 1 / combined_uncertainty
-                    combined_weights = combined_weights / ops.ReduceSum(keep_dims=True)(combined_weights,axis=1)
-                    soft_depths = self.reducesum(combined_depth * combined_weights, 1)
+                    combined_weights = combined_weights / combined_weights.sum(axis=1,keepdims=True)
+                    soft_depths = ops.sum(combined_depth * combined_weights, 1)
                     soft_MAE = (soft_depths - pred_targets['depth_3D']).abs() / pred_targets['depth_3D']
                     # the average ensemble
                     mean_depths = combined_depth.mean(axis=1)
@@ -611,7 +610,7 @@ class Mono_loss(nn.Cell):
                 valid_GRM_A = preds['GRM_A'][GRM_valid_items, :]  # valid_GRM_A shape: (valid_equas, 3)
                 valid_GRM_B = preds['GRM_B'][GRM_valid_items, :]  # valid_GRM_B shape: (valid_equas, 1)
                 invalid_GRM_A = ops.Tensor(preds['GRM_A'][~GRM_valid_items, :].asnumpy())  # invalid_GRM_A shape: (invalid_equas, 3)
-                invalid_GRM_B = ops.Tensor(preds['GRM_B'][~GRM_valid_items, :].asnumpy() ) # invalid_GRM_B shape: (invalid_equas, 1)
+                invalid_GRM_B = ops.Tensor(preds['GRM_B'][~GRM_valid_items, :].asnumpy()) # invalid_GRM_B shape: (invalid_equas, 1)
                 valid_target_location = ops.expand_dims(pred_targets['locations'],1).expand_as(preds['GRM_A'])[
                     GRM_valid_items]  # # valid_target_location shape: (valid_equas, 3)
                 invalid_target_location = ops.expand_dims(pred_targets['locations'],1).expand_as(preds['GRM_A'])[
@@ -624,12 +623,12 @@ class Mono_loss(nn.Cell):
                 valid_GRM_loss = self.reg_loss_fnc(ops.reduce_sum((valid_GRM_A * valid_target_location),1),
                                                    valid_GRM_B.squeeze(1))  # valid_GRM_loss shape: (valid_equas, 1)
                 valid_GRM_loss = valid_GRM_loss / valid_uncern + self.log(valid_uncern)
-                valid_GRM_loss = valid_GRM_loss.sum() / ops.clamp(GRM_valid_items.sum(), ops.Tensor(1,ms.float32))
+                valid_GRM_loss = valid_GRM_loss.sum() / ops.clamp(GRM_valid_items.sum(), 1)
 
                 invalid_GRM_loss = self.reg_loss_fnc(ops.reduce_sum((invalid_GRM_A * invalid_target_location),1),
                                                      invalid_GRM_B.squeeze(1))  # invalid_GRM_loss shape: (invalid_equas, 1)
                 invalid_GRM_loss = invalid_GRM_loss / invalid_uncern
-                invalid_GRM_loss = invalid_GRM_loss.sum() / ops.clamp((~GRM_valid_items).sum(), ops.Tensor(1,ms.float32))
+                invalid_GRM_loss = invalid_GRM_loss.sum() / ops.clamp((~GRM_valid_items).sum(), 1)
 
                 if self.modify_invalid_keypoint_depths:
                     GRM_loss = self.loss_weights['GRM_loss'] * (valid_GRM_loss + invalid_GRM_loss)
@@ -798,6 +797,12 @@ class Anno_Encoder(nn.Cell):
         self.output_width = cfg.INPUT.WIDTH_TRAIN // cfg.MODEL.BACKBONE.DOWN_RATIO
         self.K = self.output_width * self.output_height
 
+        self.zeros=ops.Zeros()
+        self.exp=ops.Exp()
+        self.sigmoid=ops.Sigmoid()
+        self.zeros=ops.Zeros()
+        self.l2_norm=ops.L2Normalize()
+
 
     def encode_box3d(self, rotys, dims, locs):
         '''
@@ -822,17 +827,17 @@ class Anno_Encoder(nn.Cell):
         ry = self.rad_to_matrix(rotys, N)
 
         # l, h, w
-        dims_corners = ops.tile(dims.view((-1, 1)),(1, 8))
+        dims_corners = dims.view((-1, 1)).tile((1, 8))
         dims_corners = dims_corners * 0.5
         dims_corners[:, 4:] = -dims_corners[:, 4:]
-        index = ops.tile(ops.Tensor([[4, 5, 0, 1, 6, 7, 2, 3],
+        index = ops.Tensor([[4, 5, 0, 1, 6, 7, 2, 3],
                               [0, 1, 2, 3, 4, 5, 6, 7],
-                              [4, 0, 1, 5, 6, 2, 3, 7]],ms.int32),(N, 1))
+                              [4, 0, 1, 5, 6, 2, 3, 7]],ms.int32).tile((N, 1))
 
-        box_3d_object = ops.GatherD()(dims_corners, 1, index)# you wen ti
+        box_3d_object = ops.gather_elements(dims_corners, 1, index)
         b=box_3d_object.view((N, 3, -1))
-        box_3d = ops.BatchMatMul()(ry, b)  #ry:[11,3,3]   box_3d_object:[11,3,8]
-        box_3d += ops.tile(ops.expand_dims(locs,-1),(1, 1, 8))
+        box_3d = ops.matmul(ry, b)  #ry:[11,3,3]   box_3d_object:[11,3,8]
+        box_3d += ops.expand_dims(locs,-1).tile((1, 1, 8))
 
         return ops.transpose(box_3d,(0, 2, 1))
 
@@ -841,13 +846,13 @@ class Anno_Encoder(nn.Cell):
     def rad_to_matrix(rotys, N):
         # device = rotys.device
 
-        cos, sin = ops.Cos()(rotys), ops.Sin()(rotys)
+        cos, sin = ops.cos(rotys), ops.sin(rotys)
 
         i_temp = ops.Tensor([[1, 0, 1],
                              [0, 1, 0],
                              [-1, 0, 1]], dtype=ms.float32)
 
-        ry = ops.Tile()(i_temp, (N, 1)).reshape(N, -1, 3)
+        ry = i_temp.tile((N, 1)).view(N, -1, 3)
 
         ry[:, 0, 0] *= cos
         ry[:, 0, 2] *= sin
@@ -862,28 +867,26 @@ class Anno_Encoder(nn.Cell):
         elif self.depth_mode == 'linear':
             depth = depths_offset * self.depth_ref[1] + self.depth_ref[0]
         elif self.depth_mode == 'inv_sigmoid':
-            depth = 1 / ops.Sigmoid()(depths_offset) - 1
+            depth = 1 / self.sigmoid(depths_offset) - 1
         else:
             raise ValueError
 
         if self.depth_range is not None:
-            depth = ops.clip_by_value(depth, self.depth_range[0], self.depth_range[1])
+            depth = ops.clamp(depth, self.depth_range[0], self.depth_range[1])
 
         return depth
 
     def decode_location_flatten(self, points, offsets, depths, calibs, pad_size, batch_idxs):
-        batch_size = len([calibs])
-        gts = ops.Unique()(batch_idxs)[0].asnumpy().tolist()
-        locations = ops.Zeros()((points.shape[0], 3), ms.float32)
-        p = pad_size[batch_idxs]
-        points = (points + offsets) * self.down_ratio - pad_size[
-            batch_idxs]  # Left points: The 3D centers in original images.
+        batch_size = len(calibs)
+        gts = ops.unique(batch_idxs)[0].asnumpy().tolist()
+        locations = self.zeros((points.shape[0], 3), ms.float32)
+        points = (points + offsets) * self.down_ratio - pad_size[batch_idxs]  # Left points: The 3D centers in original images.
 
         for idx, gt in enumerate(gts):
             corr_pts_idx = ops.nonzero(batch_idxs == gt).squeeze(-1)
             calib = calibs[gt]
             # concatenate uv with depth
-            corr_pts_depth = ops.Concat(axis=1)((points[corr_pts_idx], depths[corr_pts_idx, None]))
+            corr_pts_depth = ops.cat((points[corr_pts_idx], depths[corr_pts_idx, None]),axis=1)
             locations[corr_pts_idx] = project_image_to_rect(corr_pts_depth,calib)
         return locations
 
@@ -924,7 +927,7 @@ class Anno_Encoder(nn.Cell):
         pred_height_3D = pred_dimensions[:, 1]  #[k,]
         batch_size = len(calibs)
         if batch_size == 1:
-            batch_idxs = ops.Zeros()(pred_dimensions.shape[0],ms.float32)
+            batch_idxs = self.zeros(pred_dimensions.shape[0],ms.float32)
 
         center_height = pred_keypoints[:, -2, 1] - pred_keypoints[:, -1, 1]  #[2]
 
@@ -933,16 +936,15 @@ class Anno_Encoder(nn.Cell):
 
         pred_keypoint_depths = {'center': [], 'corner_02': [], 'corner_13': []}
 
-        enume = ops.Unique()(ops.cast(batch_idxs,ms.int32))[0].asnumpy().tolist()
-        for idx, gt_idx in enumerate(enume):
+        for idx, gt_idx in enumerate(ops.unique(ops.cast(batch_idxs,ms.int32))[0].asnumpy().tolist()):
             calib = calibs[idx]
             corr_pts_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1)
-            center_depth = ms.Tensor(calib['f_v'], ms.float32) * pred_height_3D[corr_pts_idx] / (
-                        ops.ReLU()(center_height[corr_pts_idx]) * self.down_ratio + self.EPS)
-            corner_02_depth = ms.Tensor(calib['f_v'], ms.float32) * ops.expand_dims(pred_height_3D[corr_pts_idx], -1) / (
-                    ops.ReLU()(corner_02_height[corr_pts_idx]) * self.down_ratio + self.EPS)
-            corner_13_depth = ms.Tensor(calib['f_v'], ms.float32) * ops.expand_dims(pred_height_3D[corr_pts_idx], -1) / (
-                    ops.ReLU()(corner_13_height[corr_pts_idx]) * self.down_ratio + self.EPS)
+            center_depth = calib['f_v'] * pred_height_3D[corr_pts_idx] / (
+                        ops.relu(center_height[corr_pts_idx]) * self.down_ratio + self.EPS)
+            corner_02_depth = calib['f_v'] * ops.expand_dims(pred_height_3D[corr_pts_idx], -1) / (
+                    ops.relu(corner_02_height[corr_pts_idx]) * self.down_ratio + self.EPS)
+            corner_13_depth = calib['f_v'] * ops.expand_dims(pred_height_3D[corr_pts_idx], -1) / (
+                    ops.relu(corner_13_height[corr_pts_idx]) * self.down_ratio + self.EPS)
 
             corner_02_depth = corner_02_depth.mean(axis=1)
             corner_13_depth = corner_13_depth.mean(axis=1)
@@ -952,8 +954,8 @@ class Anno_Encoder(nn.Cell):
             pred_keypoint_depths['corner_13'].append(corner_13_depth)
 
         for key, depths in pred_keypoint_depths.items():
-            pred_keypoint_depths[key] = ops.clip_by_value(ops.Concat()(depths), self.depth_range[0], self.depth_range[1])
-        pred_depths = ops.Stack()([depth for depth in pred_keypoint_depths.values()])
+            pred_keypoint_depths[key] = ops.clamp(ops.cat(depths), self.depth_range[0], self.depth_range[1])
+        pred_depths = ops.stack(([depth for depth in pred_keypoint_depths.values()]),axis=1)
 
         return pred_depths
 
@@ -967,11 +969,10 @@ class Anno_Encoder(nn.Cell):
         Returns:
 
         '''
-        cls_id = ops.cast(cls_id.flatten(),ms.int32)
         cls_dimension_mean = self.dim_mean[cls_id, :]
 
         if self.dim_modes[0] == 'exp':
-            dims_offset = ops.Exp()(ops.cast(dims_offset,ms.float32))
+            dims_offset = self.exp(dims_offset)
 
         if self.dim_modes[2]:
             cls_dimension_std = self.dim_std[cls_id, :]
@@ -1001,25 +1002,16 @@ class Anno_Encoder(nn.Cell):
                          for testing we need both alpha and roty
 
         '''
-        vector_ori = ops.cast(vector_ori,ms.float64)
         if self.multibin:
             pred_bin_cls = vector_ori[:, : self.orien_bin_size * 2].view(-1, self.orien_bin_size, 2)
             pred_bin_cls = nn.Softmax(axis=1)(pred_bin_cls)[..., 1]
-            orientations = ops.Zeros()((vector_ori.shape[0],), vector_ori.dtype)
+            orientations = ops.zeros((vector_ori.shape[0],), vector_ori.dtype)
             for i in range(self.orien_bin_size):
                 mask_i = (pred_bin_cls.argmax(axis=1) == i)
-                mask_i_np = mask_i.asnumpy()
-                mask_i_np_index = np.argwhere(mask_i_np == True).reshape(-1)
                 s = self.orien_bin_size * 2 + i * 2
                 e = s + 2
-                if len(mask_i_np_index > 0):
-                    pred_bin_offset = vector_ori[[mask_i_np_index], s: e].squeeze(
-                        0)  # problem, input of atan2 sometimes are 0
-                    # pred_bin_offset[:, 1]=pred_bin_offset[:,1]+Tensor(0.0001,ms.float64)
-                    p = pred_bin_offset[:, 0]
-                    # print('0:', p, '1:', pred_bin_offset[:, 1])
-                    orientations[[mask_i_np_index],] = ops.Atan2()(pred_bin_offset[:, 0], pred_bin_offset[:, 1])
-                    orientations[[mask_i_np_index],] = orientations[[mask_i_np_index],] + self.alpha_centers[i]
+                pred_bin_offset = vector_ori[mask_i, s: e]
+                orientations[mask_i] = ops.atan2(pred_bin_offset[:, 0], pred_bin_offset[:, 1]) + self.alpha_centers[i]
         else:
             axis_cls = nn.Softmax(axis=1)(vector_ori[:, :2])
             axis_cls = axis_cls[:, 0] < axis_cls[:, 1]
@@ -1027,48 +1019,47 @@ class Anno_Encoder(nn.Cell):
             head_cls = head_cls[:, 0] < head_cls[:, 1]
             # cls axis
             orientations = self.alpha_centers[axis_cls + head_cls * 2]
-            sin_cos_offset = ops.L2Normalize()(vector_ori[:, 4:])
-            orientations += ops.Atan()(sin_cos_offset[:, 0] / sin_cos_offset[:, 1])
+            sin_cos_offset = self.l2_norm(vector_ori[:, 4:])
+            orientations += ops.atan(sin_cos_offset[:, 0] / sin_cos_offset[:, 1])
 
         if locations is not None:  # Compute rays based on 3D locations.
             locations = locations.view(-1, 3)
-            rays = ops.Atan2()(locations[:, 0], locations[:, 2])
+            rays = ops.atan2(locations[:, 0], locations[:, 2])
         elif dict_for_3d_center is not None:  # Compute rays based on 3D centers projected on 2D plane.
             if len(dict_for_3d_center['calib']) == 1:  # Batch size is 1.
-                batch_idxs = ops.Zeros()((vector_ori.shape[0],), ms.uint8)
+                batch_idxs = ops.zeros((vector_ori.shape[0],), ms.uint8)
             else:
                 batch_idxs = dict_for_3d_center['batch_idxs']
             centers_3D = self.decode_3D_centers(dict_for_3d_center['target_centers'], dict_for_3d_center['offset_3D'],
                                                 dict_for_3d_center['pad_size'], batch_idxs)
             centers_3D_x = centers_3D[:, 0]  # centers_3D_x shape: (total_num_objs,)
 
-            c_u = [calib['c_u'] for calib in dict_for_3d_center['calib']]  # lao wen ti
+            c_u = [calib['c_u'] for calib in dict_for_3d_center['calib']]
             f_u = [calib['f_u'] for calib in dict_for_3d_center['calib']]
             b_x = [calib['b_x'] for calib in dict_for_3d_center['calib']]
 
-            rays = ops.ZerosLike()(orientations)
-            for idx, gt_idx in enumerate(ops.Unique()(batch_idxs.astype(ms.int32))[0].asnumpy().tolist()):
-                corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1).astype(ms.int32)
-                rays[corr_idx] = ops.Atan2()(centers_3D_x[corr_idx] - c_u[idx],
-                                             f_u[idx])  # This is exactly an approximation.
+            rays = ops.zeros_like(orientations)
+            for idx, gt_idx in enumerate(ops.unique(batch_idxs)[0].asnumpy().tolist()):
+                corr_idx = ops.cast(ops.nonzero(batch_idxs == gt_idx).squeeze(-1),ms.int32)
+                rays[corr_idx] = ops.atan2(centers_3D_x[corr_idx] - c_u[idx],f_u[idx])  # This is exactly an approximation.
         else:
             raise Exception("locations and dict_for_3d_center should not be None simultaneously.")
         alphas = orientations
-        rotys = alphas + ops.cast(rays,ms.float64)
+        rotys = alphas + rays
 
-        larger_idx = np.nonzero((rotys > -PI).asnumpy())
-        small_idx = np.nonzero((rotys < -PI).asnumpy())
-        if len(larger_idx[0]) != 0:
-            rotys[ms.Tensor(larger_idx, ms.int32)] -= 2 * PI
-        if len(small_idx[0]) != 0:
-            rotys[ms.Tensor(small_idx, ms.int32)] += 2 * PI
+        larger_idx = (rotys > -PI).nonzero()
+        small_idx = (rotys < -PI).nonzero()
+        if len(larger_idx) != 0:
+            rotys[larger_idx] -= 2 * PI
+        if len(small_idx) != 0:
+            rotys[[small_idx]] += 2 * PI
 
-        larger_idx = np.nonzero((alphas > PI).asnumpy())
-        small_idx = np.nonzero((alphas < -PI).asnumpy())
-        if len(larger_idx[0]) != 0:
-            alphas[ms.Tensor(larger_idx, ms.int32)] -= 2 * PI
-        if len(small_idx[0]) != 0:
-            alphas[ms.Tensor(small_idx, ms.int32)] += 2 * PI
+        larger_idx = (alphas > PI).nonzero()
+        small_idx = (alphas < -PI).nonzero()
+        if len(larger_idx) != 0:
+            alphas[larger_idx] -= 2 * PI
+        if len(small_idx) != 0:
+            alphas[small_idx] += 2 * PI
         return rotys, alphas
 
     def decode_3D_centers(self, target_centers, offset_3D, pad_size, batch_idxs):
@@ -1083,11 +1074,10 @@ class Anno_Encoder(nn.Cell):
         Output:
             target_centers: The 2D points that 3D centers projected on the 2D plane. shape: (total_num_objs, 2)
         '''
-        centers_3D = ops.cast(ops.ZerosLike()(target_centers),ms.float32)
-        for idx, gt_idx in enumerate(ops.Unique()(batch_idxs.astype(ms.int32))[0].asnumpy().tolist()):
-            corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1).astype(ms.int32)
-            centers_3D[corr_idx, :] = (target_centers[corr_idx, :] + offset_3D[corr_idx, :]) * self.down_ratio - \
-                                      pad_size[idx]  # The points of 3D centers projected on 2D plane.
+        centers_3D = ops.zeros_like(target_centers,dtype=ms.float32)
+        for idx, gt_idx in enumerate(ops.unique(batch_idxs)[0].asnumpy().tolist()):
+            corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1)
+            centers_3D[corr_idx, :] = (target_centers[corr_idx, :] + offset_3D[corr_idx, :]) * self.down_ratio - pad_size[idx]  # The points of 3D centers projected on 2D plane.
         return centers_3D
 
     def decode_2D_keypoints(self, target_centers, pred_keypoint_offset, pad_size, batch_idxs):
@@ -1104,12 +1094,10 @@ class Anno_Encoder(nn.Cell):
         '''
         total_num_objs, _ = pred_keypoint_offset.shape
 
-        pred_keypoint_offset = ops.Reshape()(pred_keypoint_offset,
-                                             (total_num_objs, -1, 2))  # It could be 8 or 10 keypoints.
-        pred_keypoints = ops.expand_dims(target_centers,
-                                         1) + pred_keypoint_offset  # pred_keypoints shape: (total_num_objs, keypoint_num, 2)
+        pred_keypoint_offset = pred_keypoint_offset.reshape((total_num_objs, -1, 2))  # It could be 8 or 10 keypoints.
+        pred_keypoints = ops.expand_dims(target_centers,1) + pred_keypoint_offset  # pred_keypoints shape: (total_num_objs, keypoint_num, 2)
 
-        for idx, gt_idx in enumerate(ops.Unique()(ops.cast(batch_idxs,ms.int32))[0].asnumpy().tolist()):
+        for idx, gt_idx in enumerate(ops.unique(ops.cast(batch_idxs,ms.int32))[0].asnumpy().tolist()):
             corr_idx = ops.cast(ops.nonzero(batch_idxs == gt_idx).squeeze(-1),ms.int32)
             pred_keypoints[corr_idx, :] = pred_keypoints[corr_idx, :] * self.down_ratio - pad_size[idx]
 
@@ -1148,13 +1136,13 @@ class Anno_Encoder(nn.Cell):
         pad_size = targets_dict['pad_size']  # shape: (B, 2)
 
         if GRM_uncern is None:
-            GRM_uncern = ops.Ones()((pred_rotys.shape[0], 25), ms.float32)
+            GRM_uncern = ops.ones((pred_rotys.shape[0], 25), ms.float32)
 
         if len(calibs) == 1:  # Batch size is 1.
-            batch_idxs = ops.Ones()((pred_rotys.shape[0],), ms.uint8)
+            batch_idxs = ops.ones((pred_rotys.shape[0],), ms.uint8)
 
         if GRM_valid_items is None:  # All equations of GRM is valid.
-            GRM_valid_items = ops.Ones()((pred_rotys.shape[0], 25), ms.bool_)
+            GRM_valid_items = ops.ones((pred_rotys.shape[0], 25), ms.bool_)
 
         # For debug
         '''pred_keypoint_offset = targets_dict['keypoint_offset'][:, :, 0:2].contiguous().view(-1, 20)
@@ -1176,7 +1164,7 @@ class Anno_Encoder(nn.Cell):
 
         n_pred_keypoints = pred_keypoints  # n_pred_keypoints shape: (total_num_objs, 10, 2)
 
-        for idx, gt_idx in enumerate(ops.Unique()(ops.cast(batch_idxs,ms.int32))[0].asnumpy().tolist()):
+        for idx, gt_idx in enumerate(ops.unique(ops.cast(batch_idxs,ms.int32))[0].asnumpy().tolist()):
             corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1).astype(ms.float64)
             n_pred_keypoints[corr_idx, :, 0] = (n_pred_keypoints[corr_idx, :, 0] - c_u[idx]) / f_u[idx]
             n_pred_keypoints[corr_idx, :, 1] = (n_pred_keypoints[corr_idx, :, 1] - c_v[idx]) / f_v[idx]
@@ -1192,26 +1180,26 @@ class Anno_Encoder(nn.Cell):
                 idx]  # n_centers_3D shape: (total_num_objs, 2)
             n_centers_3D[corr_idx, 1] = (n_centers_3D[corr_idx, 1] - c_v[idx]) / f_v[idx]
 
-        kp_group = ops.Concat(axis=1)([(ops.Reshape(n_pred_keypoints,(total_num_objs, 20)), n_centers_3D,
-                              ops.Zeros((total_num_objs, 2), ms.float32))])  # kp_group shape: (total_num_objs, 24)
-        coe = ops.Zeros()((total_num_objs, 24, 2), ms.float32)
+        kp_group = ops.cat([(ops.Reshape(n_pred_keypoints,(total_num_objs, 20)), n_centers_3D,
+                              ops.Zeros((total_num_objs, 2), ms.float32))],axis=1)  # kp_group shape: (total_num_objs, 24)
+        coe = ops.zeros((total_num_objs, 24, 2), ms.float32)
         coe[:, 0:: 2, 0] = -1
         coe[:, 1:: 2, 1] = -1
-        A = ops.Concat(axis=2)((coe, ops.expand_dims(kp_group,2)))
-        coz = ops.Zeros()((total_num_objs, 1, 3), ms.float32)
+        A = ops.cat((coe, ops.expand_dims(kp_group,2)),axis=2)
+        coz = ops.zeros((total_num_objs, 1, 3), ms.float32)
         coz[:, :, 2] = 1
-        A = ops.Concat(axis=1)((A, coz))  # A shape: (total_num_objs, 25, 3)
+        A = ops.cat((A, coz),axis=1)  # A shape: (total_num_objs, 25, 3)
 
         pred_rotys = pred_rotys.view(total_num_objs, 1)
-        cos = ops.Cos()(pred_rotys)  # cos shape: (total_num_objs, 1)
-        sin = ops.Sin()(pred_rotys)  # sin shape: (total_num_objs, 1)
+        cos = ops.cos(pred_rotys)  # cos shape: (total_num_objs, 1)
+        sin = ops.sin(pred_rotys)  # sin shape: (total_num_objs, 1)
 
         pred_dimensions = pred_dimensions.view(total_num_objs, 3)
         l = pred_dimensions[:, 0: 1]  # h shape: (total_num_objs, 1). The same as w and l.
         h = pred_dimensions[:, 1: 2]
         w = pred_dimensions[:, 2: 3]
 
-        B = ops.Zeros()((total_num_objs, 25, 1), ms.float32)
+        B = ops.zeros((total_num_objs, 25, 1), ms.float32)
         B[:, 0, :] = l / 2 * cos + w / 2 * sin
         B[:, 2, :] = l / 2 * cos - w / 2 * sin
         B[:, 4, :] = -l / 2 * cos - w / 2 * sin
@@ -1227,7 +1215,7 @@ class Anno_Encoder(nn.Cell):
 
         total_num_objs = n_pred_keypoints.shape[0]
         pred_direct_depths = pred_direct_depths.view(total_num_objs, )
-        for idx, gt_idx in enumerate(ops.Unique()(batch_idxs.astype(ms.int32), sorted=True)[0].asnumpy().tolist()):
+        for idx, gt_idx in enumerate(ops.unique(batch_idxs.astype(ms.int32))[0].asnumpy().tolist()):
             corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1).astype(ms.float64)
             B[corr_idx, 22, 0] = -(centers_3D[corr_idx, 0] - c_u[idx]) * pred_direct_depths[corr_idx] / f_u[idx] - b_x[
                 idx]
@@ -1235,7 +1223,7 @@ class Anno_Encoder(nn.Cell):
                 idx]
             B[corr_idx, 24, 0] = pred_direct_depths[corr_idx]
 
-        C = ops.Zeros()((total_num_objs, 25, 1), ms.float32)
+        C = ops.zeros((total_num_objs, 25, 1), ms.float32)
         kps = n_pred_keypoints.view(total_num_objs, 20)  # kps_x shape: (total_num_objs, 20)
         C[:, 0, :] = kps[:, 0: 1] * (-l / 2 * sin + w / 2 * cos)
         C[:, 1, :] = kps[:, 1: 2] * (-l / 2 * sin + w / 2 * cos)
@@ -1327,10 +1315,8 @@ class Anno_Encoder(nn.Cell):
             separate_depths: The depths produced by 24 equations, respectively. shape: (val_objs, 24).
         '''
         val_objs_num, _ = pred_combined_depth.shape
-        # DEVICE = pred_combined_depth.device
 
-        target_centers = targets_dict[
-            'target_centers']  # The position of target centers on heatmap. shape: (val_objs, 2)
+        target_centers = targets_dict['target_centers']  # The position of target centers on heatmap. shape: (val_objs, 2)
         offset_3D = targets_dict['offset_3D']  # shape: (val_objs, 2)
         calibs = targets_dict['calib']  # The list contains calibration objects. Its length is B.
         pad_size = targets_dict['pad_size']  # shape: (B, 2)
@@ -1341,12 +1327,12 @@ class Anno_Encoder(nn.Cell):
         if GRM_uncern is not None:
             assert GRM_uncern.shape[1] == 20
         else:
-            GRM_uncern = ops.Ones()((val_objs_num, 20), ms.float32)
+            GRM_uncern = ops.ones((val_objs_num, 20), ms.float32)
 
         if GRM_valid_items is not None:
             assert GRM_valid_items.shape[1] == 20
         else:
-            GRM_valid_items = ops.Ones()((val_objs_num, 20), ms.float32)
+            GRM_valid_items = ops.ones((val_objs_num, 20), ms.float32)
 
         assert pred_keypoint_offset.shape[1] == 16  # Do not use the bottom center and top center. Only 8 vertexes.
 
@@ -1362,40 +1348,31 @@ class Anno_Encoder(nn.Cell):
 
         n_pred_keypoints = pred_keypoints  # n_pred_keypoints shape: (total_num_objs, 8, 2)
 
-        for idx, gt_idx in enumerate(ops.Unique()(batch_idxs.astype(ms.int32))[0].asnumpy().tolist()):
-            corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1).astype(ms.int32)
-            n_pred_keypoints[corr_idx, :, 0] = (n_pred_keypoints[corr_idx, :, 0] - c_u[idx]) / f_u[
-                idx]  # The normalized keypoint coordinates on 2D plane. shape: (total_num_objs, 8, 2)
+        for idx, gt_idx in enumerate(ops.unique(batch_idxs)[0].asnumpy().tolist()):
+            corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1)
+            n_pred_keypoints[corr_idx, :, 0] = (n_pred_keypoints[corr_idx, :, 0] - c_u[idx]) / f_u[idx]  # The normalized keypoint coordinates on 2D plane. shape: (total_num_objs, 8, 2)
             n_pred_keypoints[corr_idx, :, 1] = (n_pred_keypoints[corr_idx, :, 1] - c_v[idx]) / f_v[idx]
 
-        centers_3D = self.decode_3D_centers(target_centers, offset_3D, pad_size,
-                                            batch_idxs)  # centers_3D: The positions of 3D centers of objects projected on original image.
+        centers_3D = self.decode_3D_centers(target_centers, offset_3D, pad_size, batch_idxs)  # centers_3D: The positions of 3D centers of objects projected on original image.
         n_centers_3D = centers_3D
-        for idx, gt_idx in enumerate(ops.Unique()(batch_idxs.astype(ms.int32))[0].asnumpy().tolist()):
+        for idx, gt_idx in enumerate(ops.unique(batch_idxs)[0].asnumpy().tolist()):
             corr_idx = ops.nonzero(batch_idxs == gt_idx).squeeze(-1).astype(ms.int32)
-            n_centers_3D[corr_idx, 0] = (n_centers_3D[corr_idx, 0] - c_u[idx]) / f_u[
-                idx]  # n_centers_3D: The normalized 3D centers on 2D plane. shape: (total_num_objs, 2)
+            n_centers_3D[corr_idx, 0] = (n_centers_3D[corr_idx, 0] - c_u[idx]) / f_u[idx]  # n_centers_3D: The normalized 3D centers on 2D plane. shape: (total_num_objs, 2)
             n_centers_3D[corr_idx, 1] = (n_centers_3D[corr_idx, 1] - c_v[idx]) / f_v[idx]
 
-        A = ops.Zeros()((val_objs_num, 20, 1), ms.float32)
-        B = ops.Zeros()((val_objs_num, 20, 1), ms.float32)
-        C = ops.Zeros()((val_objs_num, 20, 1), ms.float32)
+        A = ops.zeros((val_objs_num, 20, 1), ms.float32)
+        B = ops.zeros((val_objs_num, 20, 1), ms.float32)
+        C = ops.zeros((val_objs_num, 20, 1), ms.float32)
 
         A[:, 0:16, 0] = (n_pred_keypoints - ops.expand_dims(n_centers_3D, 1)).view(-1, 16)
         A[:, 16:20, 0] = 1
 
-        cos = ops.Cos()(pred_rotys)  # cos shape: (val_objs, 1)
-        sin = ops.Sin()(pred_rotys)  # sin shape: (val_objs, 1)
+        cos = ops.cos(pred_rotys)  # cos shape: (val_objs, 1)
+        sin = ops.sin(pred_rotys)  # sin shape: (val_objs, 1)
 
         l = pred_dimensions[:, 0: 1]  # h shape: (total_num_objs, 1). The same as w and l.
         h = pred_dimensions[:, 1: 2]
         w = pred_dimensions[:, 2: 3]
-
-        # l=l[:4,:]
-        # h = h[:4, :]
-        # w = w[:4, :]
-        # sin=sin[:4,:]
-        # cos=cos[:4,:]
 
         B[:, 0, :] = l / 2 * cos + w / 2 * sin
         B[:, 2, :] = l / 2 * cos - w / 2 * sin
@@ -1431,12 +1408,11 @@ class Anno_Encoder(nn.Cell):
 
         weights = 1 / GRM_uncern  # weights shape: (val_objs, 20)
 
-        separate_depths = (B / (A + self.EPS)).squeeze(
-            2)  # separate_depths: The depths produced by 24 equations, respectively. shape: (val_objs, 20).
-        separate_depths = ops.clip_by_value(separate_depths, self.depth_range[0], self.depth_range[1])
+        separate_depths = (B / (A + self.EPS)).squeeze(2)  # separate_depths: The depths produced by 24 equations, respectively. shape: (val_objs, 20).
+        separate_depths = ops.clamp(separate_depths, self.depth_range[0], self.depth_range[1])
 
-        weights = (weights / ops.ReduceSum(keep_dims=True)(weights, 1))
-        depth = ops.reduce_sum(weights * separate_depths, 1)
+        weights = (weights / ops.sum(weights, dim=1,keepdim=True))
+        depth = ops.sum(weights * separate_depths, 1)
 
         return depth, separate_depths
 
@@ -1464,6 +1440,6 @@ def select_point_of_interest(batch, index, feature_maps):
     # expand index in channels
     index = ops.tile(ops.expand_dims(index,-1),(1, 1, channel))   #[1,80,72]
     # select specific features bases on POIs
-    feature_maps = ops.gather_elements(feature_maps,1,index)  # Left feature_maps shape: (B, num_objs, C)
+    feature_maps = feature_maps.gather_elements(1,index)  # Left feature_maps shape: (B, num_objs, C)
 
     return feature_maps

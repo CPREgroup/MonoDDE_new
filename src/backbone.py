@@ -4,7 +4,7 @@ from mindspore import nn
 from mindspore import ops
 from .net_utils import *
 
-BN_MOMENTUM = 0.1
+BN_MOMENTUM = 0.9
 NORM_TYPE='BIN'
 
 
@@ -131,14 +131,11 @@ class DLA(nn.Cell):
     def _make_conv_level(self, inplanes, planes, convs, stride=1, dilation=1):
         modules = []
         for i in range(convs):
-            modules.extend([
-                nn.Conv2d(inplanes, planes, kernel_size=3,
-                          stride=stride if i == 0 else 1,pad_mode='pad',
-                          padding=dilation, has_bias=False, dilation=dilation),
-                nn.BatchNorm2d(planes, momentum=BN_MOMENTUM),
-                nn.ReLU()])
+            modules.append(Con_norm_act(in_channel=inplanes,out_channel=planes, kernel_size=3,
+                               stride=stride if i == 0 else 1, pad_mode='pad',padding=dilation,
+                               has_bias=False, dilation=dilation,norm_type = 'BN', momentum = BN_MOMENTUM))
             inplanes = planes
-        return nn.SequentialCell(*modules)
+        return nn.SequentialCell(modules)
 
 
     def construct(self, x):
@@ -219,12 +216,12 @@ class batch_instance_norm(nn.Cell):
         return (self.BN(x) + x) / 2
 
 
-def get_norm(planes, norm_type = 'BN', momentum = 0.1):
+def get_norm(planes, norm_type = 'BN', momentum=0.9):
     assert norm_type in ['BN', 'BIN']
     if norm_type == 'BN':
-        return nn.BatchNorm2d(planes, momentum = momentum)
+        return nn.BatchNorm2d(planes, momentum=momentum)
     elif norm_type == 'BIN':
-        return batch_instance_norm(planes,  momentum = momentum)
+        return batch_instance_norm(planes,  momentum=momentum)
 
 
 
@@ -250,17 +247,13 @@ class Root(nn.Cell):
         super(Root, self).__init__()
         self.conv=Con_norm_act(in_channel=in_channels,out_channel=out_channels,kernel_size=1,stride=1,has_bias=False
                                ,pad_mode='pad',padding=(kernel_size - 1) // 2,norm_type='BN',momentum=BN_MOMENTUM,activation=False)
-        # self.conv = nn.Conv2d(
-        #     in_channels, out_channels, 1,
-        #     stride=1, has_bias=False,pad_mode='pad', padding=(kernel_size - 1) // 2)
-        # self.bn = nn.BatchNorm2d(out_channels, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU()
         self.residual = residual
+        self.concat = ops.Concat(axis=1)
 
     def construct(self, *x):
         children = x
-        x = self.conv(ops.Concat(axis=1)(x))
-        # x = self.bn(x)
+        x = self.conv(self.concat(x))
         if self.residual:
             x += children[0]
         x = self.relu(x)
@@ -364,6 +357,8 @@ class DeformConv2d(nn.Cell):
         if kernel_size % 2 == 0:
             raise ValueError("Only odd number is supported, but current kernel sizeis {}".format(kernel_size))
 
+        self.floor=ops.Floor()
+
     def construct(self, x):
         """deformed sampling locations with augmented offsets"""
         # 0 ── h ──x
@@ -386,7 +381,7 @@ class DeformConv2d(nn.Cell):
 
         # (n, 2*k*k, h, w) -> (n, h, w, 2*k*k)
         p = p.transpose(0, 2, 3, 1)
-        p_lt = ops.Floor()(p).astype(ms.int32)
+        p_lt = self.floor(p).astype(ms.int32)
         p_rb = p_lt + 1
 
         # (n, h, w, 2*k*k) -> (n, h, w, k*k), (n, h, w, k*k)

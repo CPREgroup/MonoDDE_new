@@ -112,12 +112,12 @@ class MonoddeWithLossCell(nn.Cell):
         pad_size=data[13]
         calibs=[]
         for i in range(self.per_batch):
-            calibs.append(dict(P=data[22][i,:,:],R0=data[23][i,:,:],C2V=data[24][i,:,:],c_u=data[25][i],c_v=data[26][i],f_u=data[27][i],
-                        f_v=data[28][i],b_x=data[29][i],b_y=data[30][i]))
-        reg_mask=data[9]
+            calibs.append(dict(P=ops.cast(data[22][i,:,:],ms.float32),R0=ops.cast(data[23][i,:,:],ms.float32),C2V=ops.cast(data[24][i,:,:],ms.float32),c_u=ops.cast(data[25][i],ms.float32),c_v=ops.cast(data[26][i],ms.float32),f_u=ops.cast(data[27][i],ms.float32),
+                        f_v=ops.cast(data[28][i],ms.float32),b_x=ops.cast(data[29][i],ms.float32),b_y=ops.cast(data[30][i],ms.float32)))
+        reg_mask=ops.cast(data[9],ms.int32)
         reg_weight=data[10]
-        ori_imgs=data[14]
-        trunc_mask=data[16]
+        ori_imgs=ops.cast(data[14],ms.int32)
+        trunc_mask=ops.cast(data[16],ms.int32)
         GRM_keypoints_visible=data[21]
         return_dict = dict(cls_ids=cls_ids, target_centers=target_centers, bboxes=bboxes, keypoints=keypoints,
                            dimensions=dimensions,
@@ -139,7 +139,6 @@ class MonoddeWithLossCell(nn.Cell):
         GRM_uncern=ms.Tensor(0)
         pred_keypoints_depths_3D=ms.Tensor(0)
         pred_corner_depth_3D=ms.Tensor(0)
-        GRM_valid_items = None
         pred_regression = predictions['reg']
         batch, channel, feat_h, feat_w = pred_regression.shape
 
@@ -147,15 +146,15 @@ class MonoddeWithLossCell(nn.Cell):
         targets_bbox_points = targets_variables["target_centers"]  # representative points
 
         reg_mask_gt = targets_variables["reg_mask"] # reg_mask_gt shape: (B, num_objs)
-        flatten_reg_mask_gt = ops.Tensor(reg_mask_gt.view(-1).astype(ms.bool_))# flatten_reg_mask_gt shape: (B * num_objs)
+        flatten_reg_mask_gt = ops.cast(reg_mask_gt.view(-1),ms.bool_)# flatten_reg_mask_gt shape: (B * num_objs)
         # the corresponding image_index for each object, used for finding pad_size, calib and so on
 
         batch_idxs = ops.arange(batch).view(-1,1).expand_as(reg_mask_gt).reshape(-1) # batch_idxs shape: (B * num_objs)
-        batch_idxs=ms.Tensor(batch_idxs[flatten_reg_mask_gt].asnumpy())
-        valid_targets_bbox_points = ms.Tensor(targets_bbox_points.view(-1, 2)[flatten_reg_mask_gt].asnumpy())# valid_targets_bbox_points shape: (valid_objs, 2)
+        batch_idxs=batch_idxs[flatten_reg_mask_gt]
+        valid_targets_bbox_points = targets_bbox_points.view(-1, 2)[flatten_reg_mask_gt]# valid_targets_bbox_points shape: (valid_objs, 2)
 
         # fcos-style targets for 2D
-        target_bboxes_2D = ops.Tensor(targets_variables['bboxes'].view(-1, 4)[flatten_reg_mask_gt].asnumpy())# target_bboxes_2D shape: (valid_objs, 4). 4 -> (x1, y1, x2, y2)
+        target_bboxes_2D = targets_variables['bboxes'].view(-1, 4)[flatten_reg_mask_gt]# target_bboxes_2D shape: (valid_objs, 4). 4 -> (x1, y1, x2, y2)
         target_bboxes_height = target_bboxes_2D[:, 3] - target_bboxes_2D[:,1]  # target_bboxes_height shape: (valid_objs,)
         target_bboxes_width = target_bboxes_2D[:, 2] - target_bboxes_2D[:,0]  # target_bboxes_width shape: (valid_objs,)
 
@@ -179,8 +178,7 @@ class MonoddeWithLossCell(nn.Cell):
                                                                         targets_variables['pad_size'],
                                                                         batch_idxs)  # target_locations_3D shape: (valid_objs, 3)
 
-        target_corners_3D = self.anno_encoder.encode_box3d(target_rotys_3D, target_dimensions_3D,
-                                                           target_locations_3D)  # target_corners_3D shape: (valid_objs, 8, 3)
+        target_corners_3D = self.anno_encoder.encode_box3d(target_rotys_3D, target_dimensions_3D,target_locations_3D)  # target_corners_3D shape: (valid_objs, 8, 3)
         target_bboxes_3D = self.concat((target_locations_3D, target_dimensions_3D, target_rotys_3D[:, None]))  # target_bboxes_3D shape: (valid_objs, 7)
 
         target_trunc_mask = targets_variables['trunc_mask'].view(-1)[flatten_reg_mask_gt]  # target_trunc_mask shape(valid_objs,)
@@ -197,7 +195,8 @@ class MonoddeWithLossCell(nn.Cell):
             direct_depth_visible = self.ones((keypoints_visible.shape[0], 1),ms.bool_)
             veritical_group_visible = targets_variables["keypoints_depth_mask"].view(-1, 3)[flatten_reg_mask_gt].astype(ms.bool_)  # veritical_group_visible shape: (valid_objs, 3)
             GRM_valid_items = self.concat((keypoints_visible, direct_depth_visible, veritical_group_visible))  # GRM_valid_items shape: (val_objs, 20)
-
+        else:
+            GRM_valid_items = None
         # 2. extract corresponding predictions
         pred_regression_pois_3D = select_point_of_interest(batch, targets_bbox_points, pred_regression).view(-1, channel)[flatten_reg_mask_gt] # pred_regression_pois_3D shape: (valid_objs, C)
 
@@ -208,7 +207,7 @@ class MonoddeWithLossCell(nn.Cell):
                                          pred_regression_pois_3D[:, self.key2channel('ori_offset')]))  # pred_orientation_3D shape: (valid_objs, 16)
 
         # decode the pred residual dimensions to real dimensions
-        pred_dimensions_3D = self.anno_encoder.decode_dimension(target_clses, pred_dimensions_offsets_3D.astype(ms.float32))
+        pred_dimensions_3D = self.anno_encoder.decode_dimension(target_clses, pred_dimensions_offsets_3D)
 
         # preparing outputs
         targets = {'reg_2D': target_regression_2D, 'offset_3D': target_offset_3D, 'depth_3D': target_depths_3D,
@@ -235,11 +234,10 @@ class MonoddeWithLossCell(nn.Cell):
 
         # predict the uncertainty of depth regression
         if self.depth_with_uncertainty:
-            preds['depth_uncertainty'] = pred_regression_pois_3D[:, self.key2channel('depth_uncertainty')].squeeze(
-                -1)  # preds['depth_uncertainty'] shape: (val_objs,)
+            preds['depth_uncertainty'] = pred_regression_pois_3D[:, self.key2channel('depth_uncertainty')].squeeze(-1)  # preds['depth_uncertainty'] shape: (val_objs,)
 
             if self.uncertainty_range is not None:
-                preds['depth_uncertainty'] = ops.clip_by_value(preds['depth_uncertainty'],self.uncertainty_range[0],
+                preds['depth_uncertainty'] = ops.clamp(preds['depth_uncertainty'],self.uncertainty_range[0],
                                                          self.uncertainty_range[1])
 
         # else:
@@ -250,49 +248,47 @@ class MonoddeWithLossCell(nn.Cell):
         if self.compute_keypoint_corner:
             # targets for keypoints
             target_corner_keypoints = targets_variables["keypoints"].view(flatten_reg_mask_gt.shape[0], -1, 3)[flatten_reg_mask_gt]  # target_corner_keypoints shape: (val_objs, 10, 3)
-            targets['keypoints'] = target_corner_keypoints[:,:, :2]  # targets['keypoints'] shape: (val_objs, 10, 2)
-            targets['keypoints_mask'] = target_corner_keypoints[
-                ..., -1]  # targets['keypoints_mask'] shape: (val_objs, 10)
+            targets['keypoints'] = target_corner_keypoints[..., :2]  # targets['keypoints'] shape: (val_objs, 10, 2)
+            targets['keypoints_mask'] = target_corner_keypoints[..., -1]  # targets['keypoints_mask'] shape: (val_objs, 10)
             reg_nums['keypoints'] = targets['keypoints_mask'].sum()
             # mask for whether depth should be computed from certain group of keypoints
             target_corner_depth_mask = targets_variables["keypoints_depth_mask"].view(-1, 3)[flatten_reg_mask_gt]
-            targets['keypoints_depth_mask'] = target_corner_depth_mask.astype(ms.int32)  # target_corner_depth_mask shape: (val_objs, 3)
+            targets['keypoints_depth_mask'] = ops.cast(target_corner_depth_mask,ms.int32)  # target_corner_depth_mask shape: (val_objs, 3)
 
             # predictions for keypoints
             pred_keypoints_3D = pred_regression_pois_3D[:, self.key2channel('corner_offset')]
-
             pred_keypoints_3D = pred_keypoints_3D.view((int(flatten_reg_mask_gt.sum()), -1, 2))
             preds['keypoints'] = pred_keypoints_3D  # pred_keypoints_3D shape: (val_objs, 10, 2)
 
-            pred_keypoints_depths_3D = ops.transpose(self.anno_encoder.decode_depth_from_keypoints_batch(pred_keypoints_3D,
+            pred_keypoints_depths_3D = self.anno_encoder.decode_depth_from_keypoints_batch(pred_keypoints_3D,
                                                                                            pred_dimensions_3D,
                                                                                            targets_variables['calib'],
-                                                                                           batch_idxs),(1,0))
-            preds['keypoints_depths'] = pred_keypoints_depths_3D.astype(ms.int32)  # pred_keypoints_depths_3D shape: (val_objs, 3)
+                                                                                           batch_idxs)
+            preds['keypoints_depths'] = pred_keypoints_depths_3D  # pred_keypoints_depths_3D shape: (val_objs, 3)
 
         # Optimize keypoint offset with uncertainty.
         if self.corner_offset_uncern:
             corner_offset_uncern = pred_regression_pois_3D[:, self.key2channel('corner_offset_uncern')]
-            preds['corner_offset_uncern'] = ops.exp(ops.clip_by_value(corner_offset_uncern, self.uncertainty_range[0],
+            preds['corner_offset_uncern'] = ops.exp(ops.clamp(corner_offset_uncern, self.uncertainty_range[0],
                                                         self.uncertainty_range[1]))
 
         # Optimize dimension with uncertainty.
         if self.dim_uncern:
             dim_uncern = pred_regression_pois_3D[:, self.key2channel('3d_dim_uncern')]
-            preds['dim_uncern'] = ops.exp(ops.clip_by_value(dim_uncern, self.uncertainty_range[0],
-                                              self.uncertainty_range[1]))
+            preds['dim_uncern'] = ops.clip_by_value(dim_uncern, self.uncertainty_range[0],
+                                              self.uncertainty_range[1]).exp()
 
         # Optimize combined_depth with uncertainty
         if self.combined_depth_uncern:
             combined_depth_uncern = pred_regression_pois_3D[:, self.key2channel('combined_depth_uncern')]
-            preds['combined_depth_uncern'] = ops.exp(ops.clip_by_value(combined_depth_uncern, self.uncertainty_range[0],
-                                                         self.uncertainty_range[1]))
+            preds['combined_depth_uncern'] = ops.clamp(combined_depth_uncern, self.uncertainty_range[0],
+                                                         self.uncertainty_range[1]).exp()
 
         # Optimize corner coordinate loss with uncertainty
         if self.corner_loss_uncern:
             corner_loss_uncern = pred_regression_pois_3D[:, self.key2channel('corner_loss_uncern')]
-            preds['corner_loss_uncern'] = ops.exp(ops.clip_by_value(corner_loss_uncern, self.uncertainty_range[0],
-                                                      self.uncertainty_range[1]))
+            preds['corner_loss_uncern'] = ops.clamp(corner_loss_uncern, self.uncertainty_range[0],
+                                                      self.uncertainty_range[1]).exp()
 
         # predict the uncertainties of the solved depths from groups of keypoints
         if self.corner_with_uncertainty:
@@ -300,13 +296,13 @@ class MonoddeWithLossCell(nn.Cell):
                 'corner_uncertainty')]  # preds['corner_offset_uncertainty'] shape: (val_objs, 3)
 
             if self.uncertainty_range is not None:
-                preds['corner_offset_uncertainty'] = ops.clip_by_value(preds['corner_offset_uncertainty'],
+                preds['corner_offset_uncertainty'] = ops.clamp(preds['corner_offset_uncertainty'],
                                                                  self.uncertainty_range[0],
                                                                  self.uncertainty_range[1])
 
         if self.corner_loss_depth == 'GRM':
             GRM_uncern = pred_regression_pois_3D[:, self.key2channel('GRM_uncern')]  # GRM_uncern shape: (num_objs, 25)
-            GRM_uncern = ops.clip_by_value(GRM_uncern, self.uncertainty_range[0], self.uncertainty_range[1]).exp()
+            GRM_uncern = ops.clamp(GRM_uncern, self.uncertainty_range[0], self.uncertainty_range[1]).exp()
             # Decode rot_y
             # Verify the correctness of orientation decoding.
             '''gt_ori_code = torch.zeros_like(pred_orientation_3D).to(pred_orientation_3D.device)	# gt_ori_code shape: (num_objs, 16)
@@ -337,25 +333,19 @@ class MonoddeWithLossCell(nn.Cell):
 
         elif self.corner_loss_depth == 'soft_GRM':
             if 'GRM_uncern' in self.keys:
-                GRM_uncern = pred_regression_pois_3D[:,
-                             self.key2channel('GRM_uncern')]  # GRM_uncern shape: (num_objs, 20)
+                GRM_uncern = pred_regression_pois_3D[:,self.key2channel('GRM_uncern')]  # GRM_uncern shape: (num_objs, 20)
             elif 'GRM1_uncern' in self.keys:
-                uncern_GRM1 = pred_regression_pois_3D[:,
-                              self.key2channel('GRM1_uncern')]  # uncern_GRM1 shape: (num_objs, 8)
-                uncern_GRM2 = pred_regression_pois_3D[:,
-                              self.key2channel('GRM2_uncern')]  # uncern_GRM1 shape: (num_objs, 8)
-                uncern_Mono_Direct = pred_regression_pois_3D[:,
-                                     self.key2channel('Mono_Direct_uncern')]  # uncern_Mono_Direct shape: (num_objs, 1)
-                uncern_Mono_Keypoint = pred_regression_pois_3D[:, self.key2channel(
-                    'Mono_Keypoint_uncern')]  # uncern_Mono_Keypoint shape: (num_objs, 3)
-                GRM_uncern = ops.Concat(axis=2)((ops.expand_dims(uncern_GRM1,2), ops.expand_dims(uncern_GRM2,2))).view(
-                    -1, 16)
-                GRM_uncern = ops.Concat(axis=1)((GRM_uncern, uncern_Mono_Direct, uncern_Mono_Keypoint))  # GRM_uncern shape: (num_objs, 20)
-            GRM_uncern = ops.exp(ops.clip_by_value(GRM_uncern, self.uncertainty_range[0], self.uncertainty_range[1]))
+                uncern_GRM1 = pred_regression_pois_3D[:,self.key2channel('GRM1_uncern')]  # uncern_GRM1 shape: (num_objs, 8)
+                uncern_GRM2 = pred_regression_pois_3D[:,self.key2channel('GRM2_uncern')]  # uncern_GRM1 shape: (num_objs, 8)
+                uncern_Mono_Direct = pred_regression_pois_3D[:,self.key2channel('Mono_Direct_uncern')]  # uncern_Mono_Direct shape: (num_objs, 1)
+                uncern_Mono_Keypoint = pred_regression_pois_3D[:, self.key2channel('Mono_Keypoint_uncern')]  # uncern_Mono_Keypoint shape: (num_objs, 3)
+                GRM_uncern = ops.cat((ops.expand_dims(uncern_GRM1,2), ops.expand_dims(uncern_GRM2,2)),axis=2).view(-1, 16)
+                GRM_uncern = ops.cat((GRM_uncern, uncern_Mono_Direct, uncern_Mono_Keypoint),axis=1)  # GRM_uncern shape: (num_objs, 20)
+            GRM_uncern = ops.clamp(GRM_uncern, self.uncertainty_range[0], self.uncertainty_range[1]).exp()
             assert GRM_uncern.shape[1] == 20
 
-            pred_combined_depths = ops.Concat(axis=1)((ops.expand_dims(pred_direct_depths_3D,1), pred_keypoints_depths_3D))  # pred_combined_depths shape: (valid_objs, 4)
-            info_dict = {'target_centers': valid_targets_bbox_points.astype(ms.float32), 'offset_3D': target_offset_3D,
+            pred_combined_depths = ops.cat((ops.expand_dims(pred_direct_depths_3D,1), pred_keypoints_depths_3D),axis=1)  # pred_combined_depths shape: (valid_objs, 4)
+            info_dict = {'target_centers': valid_targets_bbox_points, 'offset_3D': target_offset_3D,
                          'pad_size': targets_variables['pad_size'],
                          'calib': targets_variables['calib'], 'batch_idxs': batch_idxs}
             GRM_rotys, _ = self.anno_encoder.decode_axes_orientation(pred_orientation_3D, dict_for_3d_center=info_dict)
@@ -408,11 +398,11 @@ class MonoddeWithLossCell(nn.Cell):
         # encode corners
         pred_corners_3D = self.anno_encoder.encode_box3d(pred_rotys_3D, pred_dimensions_3D,
                                                          pred_locations_3D)  # pred_corners_3D shape: (val_objs, 8, 3)
-        pred_corners_3D=pred_corners_3D.astype(ms.float64)
-        pred_dimensions_3D=pred_dimensions_3D.astype(ms.float64)
-        pred_locations_3D=pred_locations_3D.astype(ms.float64)
+        pred_corners_3D=pred_corners_3D
+        pred_dimensions_3D=pred_dimensions_3D
+        pred_locations_3D=pred_locations_3D
         # concatenate all predictions
-        pred_bboxes_3D = ops.Concat(axis=1)((pred_locations_3D, pred_dimensions_3D, pred_rotys_3D[:, None]))  # pred_bboxes_3D shape: (val_objs, 7)
+        pred_bboxes_3D = ops.cat((pred_locations_3D, pred_dimensions_3D, pred_rotys_3D[:, None]),axis=1)  # pred_bboxes_3D shape: (val_objs, 7)
 
         preds.update({'corners_3D': pred_corners_3D, 'rotys_3D': pred_rotys_3D, 'cat_3D': pred_bboxes_3D})
 

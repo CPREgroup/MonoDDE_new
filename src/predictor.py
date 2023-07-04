@@ -59,7 +59,7 @@ class Predictor(nn.Cell):
         self.class_head2 = nn.Conv2d(self.head_conv, classes, kernel_size=1, pad_mode='pad', padding=1 // 2,
                                      has_bias=True)
         if self.use_inplace_abn:
-            self.class_head1.append(batchnorm)
+            self.class_head1.append(batchnorm)   #need use inplace_abn
             self.class_head1.append(nn.LeakyReLU())
         else:
             self.class_head1.append(norm)
@@ -161,9 +161,9 @@ class Predictor(nn.Cell):
 
                 # apply edge feature enhancement
                 if self.enable_edge_fusion and i == self.offset_index[0] and j == self.offset_index[1]:
-                    edge_indices = ops.cast(self.stack([edge_indices]),ms.int64).squeeze(0)# B x K x 2
+                    edge_indices = self.stack([edge_indices]).squeeze(0)# B x K x 2
                     # edge_lens=data[2]
-                    edge_lens = ops.cast(ops.expand_dims(self.stack([edge_count]),0).view(-1),ms.int64) # B
+                    edge_lens = ops.expand_dims(self.stack([edge_count]),0).view(-1)# B
 
                     # normalize
                     grid_edge_indices = ops.cast(edge_indices.view(b, -1, 1, 2),ms.float32) # grid_edge_indices shape: (B, K, 1, 2)

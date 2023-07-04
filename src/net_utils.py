@@ -19,7 +19,7 @@ def project_image_to_rect(uv_depth,calib_dict):
     if isinstance(uv_depth, np.ndarray):
         pts_3d_rect = np.zeros((n, 3))
     else:
-        pts_3d_rect = ops.Zeros()(uv_depth.shape,ms.float32)
+        pts_3d_rect = ops.zeros(uv_depth.shape,ms.float32)
 
     pts_3d_rect[:, 0] = x
     pts_3d_rect[:, 1] = y
@@ -56,7 +56,7 @@ def group_norm(out_channels):
 
 def sigmoid_hm(hm_features):
     x = ops.Sigmoid()(hm_features)
-    x=ops.clip_by_value(x,1e-4,1 - (1e-4))
+    x=ops.clamp(x,1e-4,1 - (1e-4))
 
     return x
 
