@@ -194,6 +194,7 @@ def inverse_rigid_trans(Tr):
     inv_Tr[0:3, 3] = np.dot(-np.transpose(Tr[0:3, 0:3]), Tr[0:3, 3])
     return inv_Tr
 
+
 def project_image_to_rect(uv_depth,calib_dict):
     """ Input: nx3 first two channels are uv, 3rd channel
                is depth in rect camera coord.
@@ -296,14 +297,14 @@ def approx_proj_center(proj_center, surface_centers, img_size):
 heatmap util sets
 '''
 def ellip_gaussian2D(shape, sigma_x, sigma_y):
-	m, n = [(ss - 1.) / 2. for ss in shape]
-	y, x = np.ogrid[-m:m + 1, -n:n + 1]
+    m, n = [(ss - 1.) / 2. for ss in shape]
+    y, x = np.ogrid[-m:m + 1, -n:n + 1]
 
-	# generate meshgrid
-	h = np.exp(-(x * x) / (2 * sigma_x * sigma_x) - (y * y) / (2 * sigma_y * sigma_y))
-	h[h < np.finfo(h.dtype).eps * h.max()] = 0
+    # generate meshgrid
+    h = np.exp(-(x * x) / (2 * sigma_x * sigma_x) - (y * y) / (2 * sigma_y * sigma_y))
+    h[h < np.finfo(h.dtype).eps * h.max()] = 0
 
-	return h
+    return h
 
 
 def draw_umich_gaussian_2D(heatmap, center, radius_x, radius_y, k=1):
@@ -326,36 +327,36 @@ def draw_umich_gaussian_2D(heatmap, center, radius_x, radius_y, k=1):
 
 
 def gaussian_radius(height, width, min_overlap=0.7):
-	a1 = 1
-	b1 = (height + width)
-	c1 = width * height * (1 - min_overlap) / (1 + min_overlap)
-	sq1 = np.sqrt(b1 ** 2 - 4 * a1 * c1)
-	r1 = (b1 + sq1) / 2
+    a1 = 1
+    b1 = (height + width)
+    c1 = width * height * (1 - min_overlap) / (1 + min_overlap)
+    sq1 = np.sqrt(b1 ** 2 - 4 * a1 * c1)
+    r1 = (b1 + sq1) / 2
 
-	a2 = 4
-	b2 = 2 * (height + width)
-	c2 = (1 - min_overlap) * width * height
-	sq2 = np.sqrt(b2 ** 2 - 4 * a2 * c2)
-	r2 = (b2 + sq2) / 2
+    a2 = 4
+    b2 = 2 * (height + width)
+    c2 = (1 - min_overlap) * width * height
+    sq2 = np.sqrt(b2 ** 2 - 4 * a2 * c2)
+    r2 = (b2 + sq2) / 2
 
-	a3 = 4 * min_overlap
-	b3 = -2 * min_overlap * (height + width)
-	c3 = (min_overlap - 1) * width * height
-	sq3 = np.sqrt(b3 ** 2 - 4 * a3 * c3)
-	r3 = (b3 + sq3) / 2
+    a3 = 4 * min_overlap
+    b3 = -2 * min_overlap * (height + width)
+    c3 = (min_overlap - 1) * width * height
+    sq3 = np.sqrt(b3 ** 2 - 4 * a3 * c3)
+    r3 = (b3 + sq3) / 2
 
-	return min(r1, r2, r3)
+    return min(r1, r2, r3)
 
 
 def gaussian2D(shape, sigma=1):
-	m, n = [(ss - 1.) / 2. for ss in shape]
-	y, x = np.ogrid[-m:m + 1, -n:n + 1]
+    m, n = [(ss - 1.) / 2. for ss in shape]
+    y, x = np.ogrid[-m:m + 1, -n:n + 1]
 
-	# generate meshgrid
-	h = np.exp(-(x * x + y * y) / (2 * sigma * sigma))
-	h[h < np.finfo(h.dtype).eps * h.max()] = 0
+    # generate meshgrid
+    h = np.exp(-(x * x + y * y) / (2 * sigma * sigma))
+    h[h < np.finfo(h.dtype).eps * h.max()] = 0
 
-	return h
+    return h
 
 
 def draw_umich_gaussian(heatmap, center, radius, k=1, ignore=False):

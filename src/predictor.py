@@ -17,7 +17,7 @@ class Detect_Head(nn.Cell):
         self.predictor = Predictor(cfg, in_channels)
 
 
-    def construct(self, features, edge_count,edge_indices, iteration, istraining=True, test=False):
+    def construct(self, features, edge_count,edge_indices, iteration, test=False):
         x = self.predictor(features, edge_count, edge_indices)
 
         return x

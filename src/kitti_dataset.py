@@ -287,13 +287,10 @@ class KittiDataset:
             target["pad_size"]=pad_size
             target["calib"]=calib
             target["ori_img"]=ori_img
-            if self.enable_edge_fusion:
-                target['edge_len']=input_edge_count
-                target['edge_indices']=input_edge_indices
-
             # if self.transforms is not None: img, target = self.transforms(img, target)
 
-            return img, target, original_idx
+            return img,img.size,self.is_train, pad_size, calib['P'],calib['R0'],calib['C2V'],calib['c_u'], calib['c_v'],\
+               calib['f_u'],calib['f_v'],calib['b_x'],calib['b_y'],input_edge_count,input_edge_indices
 
         # heatmap
         heat_map = np.zeros([self.num_classes, self.output_height, self.output_width], dtype=np.float32)
@@ -454,8 +451,7 @@ class KittiDataset:
             target_center[1] = np.clip(target_center[1], y_min, y_max)
 
             pred_2D = True  # In fact, there are some wrong annotations where the target center is outside the box2d
-            if not (target_center[0] >= box2d[0] and target_center[1] >= box2d[1] and target_center[0] <= box2d[
-                2] and target_center[1] <= box2d[3]):
+            if not (target_center[0] >= box2d[0] and target_center[1] >= box2d[1] and target_center[0] <= box2d[2] and target_center[1] <= box2d[3]):
                 pred_2D = False
 
             if (bbox_dim > 0).all() and (0 <= target_center[0] <= self.output_width - 1) and (
@@ -505,42 +501,12 @@ class KittiDataset:
                 occlusions[i] = float_occlusion
                 truncations[i] = float_truncation
                 GRM_keypoints_visible[i] = GRM_keypoint_visible
-
-
-        # size_istrain=np.array([img.size[0],img.size[1],self.is_train.astype(np.int32)])
-        # cls_ids=cls_ids[:,np.newaxis]
-        # reg_mask=reg_mask[:, np.newaxis]
-        # reg_weight=reg_weight[:, np.newaxis]
-        # rotys=rotys[:, np.newaxis]
-        # trunc_mask=trunc_mask[:, np.newaxis]
-        # alphas=alphas[:, np.newaxis]
-        # occlusions=occlusions[:, np.newaxis]
-        # truncations=truncations[:, np.newaxis]
-        # cat_array=np.concatenate((cls_ids,target_centers,keypoints_depth_mask,dimensions,locations,reg_mask,reg_weight,offset_3D
-        #                           ,bboxes,rotys,trunc_mask,alphas,orientations,gt_bboxes,occlusions,truncations,GRM_keypoints_visible), axis=1)
-        # target=[keypoints,pad_size, ori_img, heat_map]
-        # target={'image_size':img.size,'is_train':self.is_train, 'cls_ids':cls_ids,
-        #         'target_centers':target_centers, "keypoints": keypoints, "keypoints_depth_mask": keypoints_depth_mask,
-        #         "dimensions": dimensions, "locations": locations, "calib": calib, "reg_mask": reg_mask, "reg_weight": reg_weight,
-        #         "offset_3D": offset_3D, "2d_bboxes": bboxes, "pad_size": pad_size, "ori_img": ori_img, "rotys": rotys, "trunc_mask": trunc_mask,
-        #         "alphas": alphas, "orientations": orientations, "hm": heat_map, "gt_bboxes": gt_bboxes, "occlusions": occlusions,
-        # "truncations": truncations, "GRM_keypoints_visible": GRM_keypoints_visible}
-        # if self.enable_edge_fusion:
-        #     pass
-        #     # size_istrain=np.append(size_istrain,input_edge_count)
-        #     # target['edge_len']= input_edge_count
-        #     # target['edge_indices']= input_edge_indices
-        # else:
-        #     input_edge_count=0
-        #     # size_istrain = np.append(size_istrain, 0)
-        #     input_edge_indices=None
         return img,img.size,self.is_train, cls_ids,target_centers, keypoints, keypoints_depth_mask,\
                dimensions, locations, reg_mask, reg_weight,\
                offset_3D, bboxes, pad_size, ori_img, rotys, trunc_mask,\
                alphas, orientations, heat_map, gt_bboxes,  \
                GRM_keypoints_visible, calib['P'],calib['R0'],calib['C2V'],calib['c_u'], calib['c_v'],\
-               calib['f_u'],calib['f_v'],calib['b_x'],calib['b_y'],input_edge_count,input_edge_indices
-        # return img, size_istrain,cat_array,keypoints,pad_size, ori_img, heat_map,original_idx,input_edge_indices
+               calib['f_u'],calib['f_v'],calib['b_x'],calib['b_y'],input_edge_count,input_edge_indices, original_idx
 
 
 class DatasetCatalog:
@@ -621,7 +587,7 @@ def create_kitti_dataset(cfg):
         dataset_column_names=['img','size','is_train', 'cls_ids','target_centers', 'keypoints', 'keypoints_depth_mask',\
                'dimensions', 'locations', 'reg_mask', 'reg_weight',\
                'offset_3D', 'bboxes', 'pad_size', 'ori_img', 'rotys', 'trunc_mask',\
-               'alphas', 'orientations', 'heat_map', 'gt_bboxes',  'GRM_keypoints_visible', 'P','R0','C2V','c_u', 'c_v','f_u','f_v','b_x','b_y','input_edge_count','input_edge_indices']
+               'alphas', 'orientations', 'heat_map', 'gt_bboxes',  'GRM_keypoints_visible', 'P','R0','C2V','c_u', 'c_v','f_u','f_v','b_x','b_y','input_edge_count','input_edge_indices', 'original_idx']
         distributed_sampler = DistributedSampler(len(kitti_dataset), device_num, cfg.rank, shuffle=True)
         transformers_fn=Normalization(cfg)
         kitti_dataset.transforms = transformers_fn

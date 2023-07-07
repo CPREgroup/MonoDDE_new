@@ -6,6 +6,7 @@ import numpy as np
 import pdb
 from shapely.geometry import Polygon
 from .net_utils import Converter_key2channel,project_image_to_rect
+from Monodde.model_utils.utils import get_iou_3d
 PI = np.pi
 
 
@@ -194,51 +195,6 @@ def Real_MultiBin_loss(vector_ori, gt_ori, num_bin=4):
             reg_cnt += valid_mask_i.sum()
 
     return ops.div(cls_losses, ms.Tensor(num_bin,ms.float32)) + ops.div(reg_losses, reg_cnt)
-
-
-def get_iou_3d(pred_corners, target_corners):
-    """
-    :param corners3d: (N, 8, 3) in rect coords
-    :param query_corners3d: (N, 8, 3)
-    :return: IoU
-    """
-    min = ops.Minimum()
-    max = ops.Maximum()
-    zeros=ops.Zeros()
-
-    A, B = pred_corners, target_corners
-    N = A.shape[0]
-
-    # init output
-    iou3d = zeros((N,),ms.float32)
-
-    # for height overlap, since y face down, use the negative y
-    min_h_a = - A[:, 0:4, 1].sum(axis=1) / 4.0
-    max_h_a = - A[:, 4:8, 1].sum(axis=1) / 4.0
-    min_h_b = - B[:, 0:4, 1].sum(axis=1) / 4.0
-    max_h_b = - B[:, 4:8, 1].sum(axis=1) / 4.0
-
-    # overlap in height
-    h_max_of_min = max(min_h_a, min_h_b)
-    h_min_of_max = min(max_h_a, max_h_b)
-    h_overlap = max(zeros(h_min_of_max.shape,ms.float32),h_min_of_max - h_max_of_min)
-
-    # x-z plane overlap
-    for i in range(N):
-        bottom_a, bottom_b =  Polygon(ops.transpose(A[i, 0:4, [0, 2]],(1,0))), Polygon(ops.transpose(B[i, 0:4, [0, 2]],(1,0)))
-
-        if bottom_a.is_valid and bottom_b.is_valid:
-            # check is valid,  A valid Polygon may not possess any overlapping exterior or interior rings.
-            bottom_overlap = bottom_a.intersection(bottom_b).area
-        else:
-            bottom_overlap =0
-
-        overlap3d = bottom_overlap * h_overlap[i]
-        union3d = bottom_a.area * (max_h_a[i] - min_h_a[i]) + bottom_b.area  * (max_h_b[i] - min_h_b[i]) - overlap3d
-
-        iou3d[i] = overlap3d / union3d
-
-    return iou3d
 
 
 class Mono_loss(nn.Cell):
@@ -840,6 +796,24 @@ class Anno_Encoder(nn.Cell):
         box_3d += ops.expand_dims(locs,-1).tile((1, 1, 8))
 
         return ops.transpose(box_3d,(0, 2, 1))
+
+    def decode_box2d_fcos(self, centers, pred_offset, pad_size=None, out_size=None):
+        box2d_center = centers.view(-1, 2)
+        box2d = ops.zeros((box2d_center.shape[0], 4))
+        # left, top, right, bottom
+        box2d[:, :2] = box2d_center - pred_offset[:, :2]
+        box2d[:, 2:] = box2d_center + pred_offset[:, 2:]
+
+        # for inference
+        if pad_size is not None:
+            N = box2d.shape[0]
+            # upscale and subtract the padding
+            box2d = box2d * self.down_ratio - pad_size.tile((1, 2))
+            # clamp to the image bound
+            box2d[:, 0::2].clamp(min=0, max=out_size[0] - 1)
+            box2d[:, 1::2].clamp(min=0, max=out_size[1] - 1)
+
+        return box2d
 
 
     @staticmethod

@@ -6,6 +6,7 @@ import mindspore.communication as comm
 from config import cfg
 import datetime
 import logging
+import shutil
 import warnings
 from model_utils.config import config,default_setup
 # from utils.backup_files import sync_root
@@ -89,6 +90,27 @@ def train_preprocess():
     device=ms.get_context("device_target")
     init_distribute()  # init distributed
 
+
+def load_parameters(val_network, train_network):
+    logging.info("Load parameters of train network")
+    param_dict_new = {}
+    for key, values in train_network.parameters_and_names():
+        if key.startswith('moments.'):
+            continue
+        elif key.startswith('yolo_network.'):
+            param_dict_new[key[13:]] = values
+        else:
+            param_dict_new[key] = values
+    ms.load_param_into_net(val_network, param_dict_new)
+    logging.info('Load train network success')
+
+
+def get_val_dataset(cfg,is_train=False):
+    cfg.is_training=is_train
+    datasets=create_kitti_dataset(cfg)
+    return datasets
+
+
 # @moxing_wrapper(pre_process=modelarts_pre_process, post_process=modelarts_post_process, pre_args=[config])
 def train():
     train_preprocess()
@@ -110,6 +132,9 @@ def train():
     end = time.time()
     ckpt_queue = deque()
 
+    ds_val = get_val_dataset(cfg)
+    eval_wrapper = EvalWrapper(cfg, val_network,ds_val)
+
     default_depth_method = cfg.MODEL.HEAD.OUTPUT_DEPTH
     if cfg.local_rank == 0:
         best_mAP = 0
@@ -120,85 +145,94 @@ def train():
 
     iter_per_epoch=cfg.SOLVER.IMS_PER_BATCH
 
-    for iteration in range(0, max_iter):
-        for i, data in enumerate(data_loader):
-            data_time = time.time() - end
-            loss=network(data,iteration)
-            meters.update(loss=loss.asnumpy())
-            batch_time = time.time() - end
-            end = time.time()
-            meters.update(time=batch_time, data=data_time)
-            print(loss)
+    # for iteration in range(0, max_iter):
+    for data, iteration in zip(data_loader,range(0, max_iter)):
+        data_time = time.time() - end
+        loss=network(data,iteration)
+        # loss=ms.Tensor(0)
+        meters.update(loss=loss.asnumpy())
+        batch_time = time.time() - end
+        end = time.time()
+        meters.update(time=batch_time, data=data_time)
+        print(loss)
 
-            eta_seconds = meters.time.global_avg * (max_iter - iteration)
-            eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-            if iteration % 10 == 0 or iteration == max_iter:
-                logger.info(
-                    meters.delimiter.join(
-                        [
-                            "eta: {eta}",
-                            "iter: {iter}",
-                            "{meters}",
-                            "lr: {lr:.8f} \n",
-                        ]
-                    ).format(
-                        eta=eta_string,
-                        iter=iteration,
-                        meters=str(meters),
-                        lr=cfg.SOLVER.BASE_LR,
-                    )
+        eta_seconds = meters.time.global_avg * (max_iter - iteration)
+        eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+        if iteration % 10 == 0 or iteration == max_iter:
+            logger.info(
+                meters.delimiter.join(
+                    [
+                        "eta: {eta}",
+                        "iter: {iter}",
+                        "{meters}",
+                        "lr: {lr:.8f} \n",
+                    ]
+                ).format(
+                    eta=eta_string,
+                    iter=iteration,
+                    meters=str(meters),
+                    lr=cfg.SOLVER.BASE_LR,
                 )
+            )
 
-            if cfg.rank == 0 and (iteration % cfg.SOLVER.SAVE_CHECKPOINT_INTERVAL == 0):
-                logger.info('iteration = {}, saving checkpoint ...'.format(iteration))
-                ckpt_name = os.path.join(cfg.OUTPUT_DIR, "MonoDDE_{}_{}.ckpt".format(iteration + 1, cfg.SOLVER.IMS_PER_BATCH))
-                ms.save_checkpoint(network, ckpt_name)
-                if len(ckpt_queue) == cfg.SOLVER.SAVE_CHECKPOINT_MAX_NUM:
-                    ckpt_to_remove = ckpt_queue.popleft()
-                    os.remove(ckpt_to_remove)
-                ckpt_queue.append(ckpt_name)
-            if iteration == max_iter and cfg.rank == 0:
-                ckpt_name = os.path.join(cfg.OUTPUT_DIR,
-                                         "MonoDDE_{}_{}.ckpt".format(iteration + 1, iter_per_epoch))
-                ms.save_checkpoint(network, ckpt_name)
+        if cfg.rank == 0 and (iteration % cfg.SOLVER.SAVE_CHECKPOINT_INTERVAL == 0):
+            logger.info('iteration = {}, saving checkpoint ...'.format(iteration))
+            ckpt_name = os.path.join(cfg.OUTPUT_DIR, "MonoDDE_{}_{}.ckpt".format(iteration, cfg.SOLVER.IMS_PER_BATCH))
+            ms.save_checkpoint(network, ckpt_name)
+            if len(ckpt_queue) == cfg.SOLVER.SAVE_CHECKPOINT_MAX_NUM:
+                ckpt_to_remove = ckpt_queue.popleft()
+                # shutil.rmtree(ckpt_to_remove)
+            ckpt_queue.append(ckpt_name)
+        if iteration == max_iter and cfg.rank == 0:
+            ckpt_name = os.path.join(cfg.OUTPUT_DIR,
+                                     "MonoDDE_{}_{}.ckpt".format(iteration + 1, iter_per_epoch))
+            ms.save_checkpoint(network, ckpt_name)
 
-            if iteration % cfg.SOLVER.EVAL_INTERVAL == 0:
-                if cfg.SOLVER.EVAL_AND_SAVE_EPOCH:
-                    cur_epoch = iteration // iter_per_epoch
-                    logger.info('epoch = {}, evaluate model on validation set with depth {}'.format(cur_epoch,
+        if iteration % cfg.SOLVER.EVAL_INTERVAL == 0:
+            if cfg.SOLVER.EVAL_AND_SAVE_EPOCH:
+                cur_epoch = iteration // iter_per_epoch
+                logger.info('epoch = {}, evaluate model on validation set with depth {}'.format(cur_epoch,
+                                                                                                default_depth_method))
+            else:
+                logger.info('iteration = {}, evaluate model on validation set with depth {}'.format(iteration,
                                                                                                     default_depth_method))
-                else:
-                    logger.info('iteration = {}, evaluate model on validation set with depth {}'.format(iteration,
-                                                                                                        default_depth_method))
 
-                # result_dict, result_str, dis_ious = do_eval(cfg, model, data_loaders_val, iteration)
+            val_types = ("detection",)
+            dataset_name = cfg.DATASETS.TEST[0]
 
-                # if comm.get_local_rank() == 0:
-                #     # only record more accurate R40 results
-                #     result_dict = result_dict[0]
-                #
-                #     # record the best model according to the AP_3D, Car, Moderate, IoU=0.7
-                #     important_key = '{}_3d_{:.2f}/moderate'.format('Car', 0.7)
-                #     eval_mAP = float(result_dict[important_key])
-                #     if eval_mAP >= best_mAP:
-                #         # save best mAP and corresponding iterations
-                #         best_mAP = eval_mAP
-                #         best_iteration = iteration
-                #         best_result_str = result_str
-                #         ckpt_name = os.path.join(cfg.OUTPUT_DIR,
-                #                                  "model_moderate_best_{}.ckpt".format(default_depth_method))
-                #         ms.save_checkpoint(network, ckpt_name)
-                #
-                #         if cfg.SOLVER.EVAL_AND_SAVE_EPOCH:
-                #             logger.info(
-                #                 'epoch = {}, best_mAP = {:.2f}, updating best checkpoint for depth {} \n'.format(
-                #                     cur_epoch, eval_mAP, default_depth_method))
-                #         else:
-                #             logger.info(
-                #                 'iteration = {}, best_mAP = {:.2f}, updating best checkpoint for depth {} \n'.format(
-                #                     iteration, eval_mAP, default_depth_method))
-                #
-                #     eval_iteration += 1
+            if cfg.OUTPUT_DIR:
+                output_folder = os.path.join(cfg.OUTPUT_DIR, dataset_name, "inference_{}".format(iteration))
+                os.makedirs(output_folder, exist_ok=True)
+            load_parameters(val_network, train_network=network)
+            # result_dict, result_str, dis_ious  = eval_wrapper.inference(cur_epoch=iteration + 1, cur_step=1)
+            result_dict, dis_ious = eval_wrapper.inference(iteration)
+
+            if comm.get_local_rank() == 0:
+                # only record more accurate R40 results
+                result_dict = result_dict[0]
+
+                # record the best model according to the AP_3D, Car, Moderate, IoU=0.7
+                important_key = '{}_3d_{:.2f}/moderate'.format('Car', 0.7)
+                eval_mAP = float(result_dict[important_key])
+                if eval_mAP >= best_mAP:
+                    # save best mAP and corresponding iterations
+                    best_mAP = eval_mAP
+                    best_iteration = iteration
+                    # best_result_str = result_str
+                    ckpt_name = os.path.join(cfg.OUTPUT_DIR,
+                                             "model_moderate_best_{}.ckpt".format(default_depth_method))
+                    ms.save_checkpoint(network, ckpt_name)
+            #
+                    if cfg.SOLVER.EVAL_AND_SAVE_EPOCH:
+                        logger.info(
+                            'epoch = {}, best_mAP = {:.2f}, updating best checkpoint for depth {} \n'.format(
+                                cur_epoch, eval_mAP, default_depth_method))
+                    else:
+                        logger.info(
+                            'iteration = {}, best_mAP = {:.2f}, updating best checkpoint for depth {} \n'.format(
+                                iteration, eval_mAP, default_depth_method))
+
+                eval_iteration += 1
     total_training_time = time.time() - start_training_time
     total_time_str = str(datetime.timedelta(seconds=total_training_time))
     if cfg.rank == 0:
